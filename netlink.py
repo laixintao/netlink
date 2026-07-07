@@ -4,6 +4,7 @@ netlink.py  –  PCIe / NIC / Bond / LLDP Topology
 Python 3.10+, stdlib only.  Tip: pipe through  less -SR  for wide lines.
 """
 
+import argparse
 import json
 import os
 import re as _re
@@ -345,11 +346,18 @@ def render_topology(bonds: list[dict], standalone_ifaces: list[dict]) -> None:
 # ── main ──────────────────────────────────────────────────────────────────────
 
 def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="PCIe / NIC / Bond / LLDP Topology. Tip: pipe through  less -SR  for wide lines."
+    )
+    parser.add_argument("--color", action="store_true",
+                        help="force color output even when stdout is not a TTY (e.g. when piping to less)")
+    args = parser.parse_args()
+
     if sys.platform != "linux":
         sys.exit(f"error: this tool reads /proc and /sys — Linux only (got {sys.platform})")
 
     global _USE_COLOR
-    _USE_COLOR = sys.stdout.isatty() and "NO_COLOR" not in os.environ
+    _USE_COLOR = args.color or (sys.stdout.isatty() and "NO_COLOR" not in os.environ)
 
     bond_slaves: set[str] = set()
     bonds: list[dict] = []
