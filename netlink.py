@@ -269,16 +269,30 @@ def _render_iface_body(page: Page, iface: dict, p: str, rb: str = "") -> None:
     page.add(R(f"{p}{cyn('├─ PCIe')} {'─' * 80}"))
     page.add(R(f"{p}{dim('│')}  {_kv('pci', iface['pci'])}   {_kv('numa', iface['numa'])}"))
     page.add(R(f"{p}{dim('│')}  {_kv('driver', iface['driver'])}"))
-    # "│  model:  " overhead = 1+2+6+2 = 11 visible chars; +1 for right border
-    # Use "..." (3 ASCII chars) not "…" — U+2026 is East-Asian-ambiguous-width
-    # and renders as 2 columns on CJK-configured terminals.
+    # lspci -vv uses \t as field separator (e.g. "LnkCap:\tPort #0...").
+    # \t counts as 1 in len() but expands to multiple columns in the terminal,
+    # causing _rclose to place the border too far right. Replace with a space.
+    # Use "..." not "…" — U+2026 is East-Asian-ambiguous-width (renders 2 cols on CJK terminals).
+    def _clean(s: str) -> str:
+        return s.replace('\t', ' ')
+
+    # "│  model:  " overhead = │(1) + 2sp + model:(6) + 2sp = 11; +1 border
     _max_model = LEFT_W - len(p) - 12
-    _model = iface['model']
+    _model = _clean(iface['model'])
     if len(_model) > _max_model:
         _model = _model[:_max_model - 3] + "..."
     page.add(R(f"{p}{dim('│')}  {_kv('model', mgn(_model))}"))
-    page.add(R(f"{p}{dim('│')}  {dim(iface['lnkcap'])}"))
-    page.add(R(f"{p}{dim('│')}  {dim(iface['lnksta'])}"))
+
+    # "│  " overhead = │(1) + 2sp = 3; +1 border
+    _max_lnk = LEFT_W - len(p) - 4
+    _lnkcap = _clean(iface['lnkcap'])
+    _lnksta = _clean(iface['lnksta'])
+    if len(_lnkcap) > _max_lnk:
+        _lnkcap = _lnkcap[:_max_lnk - 3] + "..."
+    if len(_lnksta) > _max_lnk:
+        _lnksta = _lnksta[:_max_lnk - 3] + "..."
+    page.add(R(f"{p}{dim('│')}  {dim(_lnkcap)}"))
+    page.add(R(f"{p}{dim('│')}  {dim(_lnksta)}"))
 
     lldp = iface["lldp"]
     if lldp["switch"] != "N/A":
