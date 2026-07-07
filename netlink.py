@@ -269,10 +269,12 @@ def _render_iface_body(page: Page, iface: dict, p: str, rb: str = "") -> None:
     page.add(R(f"{p}{dim('│')}  {_kv('pci', iface['pci'])}   {_kv('numa', iface['numa'])}"))
     page.add(R(f"{p}{dim('│')}  {_kv('driver', iface['driver'])}"))
     # "│  model:  " overhead = 1+2+6+2 = 11 visible chars; +1 for right border
+    # Use "..." (3 ASCII chars) not "…" — U+2026 is East-Asian-ambiguous-width
+    # and renders as 2 columns on CJK-configured terminals.
     _max_model = LEFT_W - len(p) - 12
     _model = iface['model']
     if len(_model) > _max_model:
-        _model = _model[:_max_model - 1] + "…"
+        _model = _model[:_max_model - 3] + "..."
     page.add(R(f"{p}{dim('│')}  {_kv('model', mgn(_model))}"))
     page.add(R(f"{p}{dim('│')}  {dim(iface['lnkcap'])}"))
     page.add(R(f"{p}{dim('│')}  {dim(iface['lnksta'])}"))
