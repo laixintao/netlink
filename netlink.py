@@ -39,6 +39,7 @@ def dim(s: str)  -> str: return _a(s, 2)
 def bold(s: str) -> str: return _a(s, 1)
 def grn(s: str)  -> str: return _a(s, 32)
 def cyn(s: str)  -> str: return _a(s, 36)
+def mgn(s: str)  -> str: return _a(s, 35)
 def bgrn(s: str) -> str: return _a(s, 1, 32)
 def bred(s: str) -> str: return _a(s, 1, 31)
 def bylw(s: str) -> str: return _a(s, 1, 33)
@@ -267,7 +268,12 @@ def _render_iface_body(page: Page, iface: dict, p: str, rb: str = "") -> None:
     page.add(R(f"{p}{cyn('├─ PCIe')} {'─' * 80}"))
     page.add(R(f"{p}{dim('│')}  {_kv('pci', iface['pci'])}   {_kv('numa', iface['numa'])}"))
     page.add(R(f"{p}{dim('│')}  {_kv('driver', iface['driver'])}"))
-    page.add(R(f"{p}{dim('│')}  {_kv('model', iface['model'])}"))
+    # "│  model:  " overhead = 1+2+6+2 = 11 visible chars; +1 for right border
+    _max_model = LEFT_W - len(p) - 12
+    _model = iface['model']
+    if len(_model) > _max_model:
+        _model = _model[:_max_model - 1] + "…"
+    page.add(R(f"{p}{dim('│')}  {_kv('model', mgn(_model))}"))
     page.add(R(f"{p}{dim('│')}  {dim(iface['lnkcap'])}"))
     page.add(R(f"{p}{dim('│')}  {dim(iface['lnksta'])}"))
 
