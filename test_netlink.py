@@ -23,10 +23,10 @@ def strip(s: str) -> str:
 # ── fixtures ──────────────────────────────────────────────────────────────────
 
 LLDP_OK = {
-    "switch":   "MY-CBJ4-SHOPEE-LAN-R034-P04-LEAF-01",
-    "mgmt":     "172.30.32.17",
+    "switch":   "sw-rack01-leaf-01.example.net",
+    "mgmt":     "192.0.2.1",
     "port":     "ifname 25GE1/0/43",
-    "sw_model": "HUAWEI CE6885-48Y8CQ",
+    "sw_model": "DemoSwitch DS6885-48Y8CQ",
 }
 
 LLDP_NONE = {"switch": "N/A", "mgmt": "N/A", "port": "N/A", "sw_model": "N/A"}
@@ -35,11 +35,11 @@ LLDP_NONE = {"switch": "N/A", "mgmt": "N/A", "port": "N/A", "sw_model": "N/A"}
 def make_iface(name="eno1", state="up", lldp=None) -> dict:
     return {
         "name": name, "state": state,
-        "mac": "a6:ea:53:8b:77:dc", "mtu": "1500",
+        "mac": "de:ad:be:ef:00:01", "mtu": "1500",
         "speed": "10000Mb/s", "duplex": "Full",
         "pci": "0000:1a:00.0", "numa": "0",
-        "driver": "i40e",
-        "model": "Ethernet controller: Intel Corporation Ethernet Connection X722 for 10GbE SFP+ (rev 09)",
+        "driver": "test_driver",
+        "model": "Ethernet controller: Test NIC Model (rev 01)",
         "lnkcap": "LnkCap: Port #0, Speed 2.5GT/s, Width x1, ASPM L0s L1",
         "lnksta": "LnkSta: Speed 2.5GT/s, Width x1",
         "lldp": lldp if lldp is not None else LLDP_OK,
@@ -50,7 +50,7 @@ def make_bond(slaves=("eno1", "eno2"), status="up") -> dict:
     return {
         "name": "bond0", "mode": "IEEE 802.3ad", "hash": "layer3+4",
         "status": status, "miimon": "100 ms", "ports": str(len(slaves)),
-        "partner": "c4:12:ec:2e:a8:f1", "slaves": list(slaves),
+        "partner": "aa:bb:cc:dd:ee:11", "slaves": list(slaves),
     }
 
 
@@ -82,10 +82,10 @@ class TestSwitchBox:
     def test_switch_value_present(self):
         lines = self.box_lines()
         combined = "\n".join(lines)
-        assert "MY-CBJ4-SHOPEE-LAN-R034-P04-LEAF-01" in combined
-        assert "172.30.32.17" in combined
+        assert "sw-rack01-leaf-01.example.net" in combined
+        assert "192.0.2.1" in combined
         assert "25GE1/0/43" in combined
-        assert "HUAWEI CE6885-48Y8CQ" in combined
+        assert "DemoSwitch DS6885-48Y8CQ" in combined
 
     def test_long_switch_name_does_not_misalign(self):
         lldp = {
@@ -150,8 +150,8 @@ class TestPage:
     def test_anchor_arrow_visual_width(self):
         page = self._make_page_with_lldp()
         arrow_line = strip(page._left[1])
-        assert len(arrow_line) == netlink.LEFT_W, (
-            f"arrow visual width {len(arrow_line)} ≠ LEFT_W {netlink.LEFT_W}"
+        assert len(arrow_line) == netlink.SWITCH_COL, (
+            f"arrow visual width {len(arrow_line)} ≠ SWITCH_COL {netlink.SWITCH_COL}"
         )
 
     def test_arrow_ends_with_arrowhead(self):
@@ -221,7 +221,7 @@ class TestRenderStandalone:
 
     def test_driver_present(self):
         combined = "\n".join(self._render(make_iface()))
-        assert "i40e" in combined
+        assert "test_driver" in combined
 
     def test_no_lldp_shows_message(self):
         combined = "\n".join(self._render(make_iface(lldp=LLDP_NONE)))

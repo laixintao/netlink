@@ -169,7 +169,8 @@ def collect_bond(name: str) -> dict:
 
 # ── layout engine ─────────────────────────────────────────────────────────────
 
-LEFT_W = 112  # visible-character width of left panel
+LEFT_W    = 112  # visible-character width of left panel (box borders land here)
+SWITCH_COL = LEFT_W + 24  # column where switch boxes start (arrow extends this far)
 
 
 def _fill_close(content: str, fill: str, close: str) -> str:
@@ -220,8 +221,8 @@ class Page:
         """Emit LLDP arrow line and record right-panel anchor."""
         idx = len(self._left)
         label = "└─ LLDP "
-        vbase = _vlen(prefix) + len(label)           # visible length of base
-        ndash = max(2, LEFT_W - vbase - 1)
+        vbase = _vlen(prefix) + len(label)
+        ndash = max(2, SWITCH_COL - vbase - 1)       # extend to SWITCH_COL
         arrow = prefix + cyn(label + "─" * ndash + "►")
         self._left.append(arrow)
         self._anchors.append((idx, lldp))
@@ -241,7 +242,7 @@ class Page:
             left = self._left[i] if i < len(self._left) else ""
             rbox = right.get(i)
             if rbox is not None:
-                out.append(_ljust(left, LEFT_W) + " " + rbox)
+                out.append(_ljust(left, SWITCH_COL) + " " + rbox)
             else:
                 out.append(left)
         return "\n".join(out)
@@ -311,6 +312,28 @@ def render_standalone(page: Page, iface: dict) -> None:
     page.add(_fill_close(dim("└"), "─", "┘"))
 
 
+# ── topology renderer ─────────────────────────────────────────────────────────
+
+def render_topology(bonds: list[dict], standalone_ifaces: list[dict]) -> None:
+    """Render and print a full topology page from pre-collected data dicts."""
+    page = Page()
+    page.add()
+    page.add(bold("  PCIe / NIC / Bond / LLDP  Topology"))
+    page.add()
+
+    if bonds:
+        for bond in bonds:
+            render_bond(page, bond)
+            page.add()
+
+    if standalone_ifaces:
+        for iface in standalone_ifaces:
+            render_standalone(page, iface)
+            page.add()
+
+    print(page.render())
+
+
 # ── main ──────────────────────────────────────────────────────────────────────
 
 def main() -> None:
@@ -320,45 +343,28 @@ def main() -> None:
     global _USE_COLOR
     _USE_COLOR = sys.stdout.isatty() and "NO_COLOR" not in os.environ
 
-    page = Page()
-    page.add()
-    page.add(bold("  PCIe / NIC / Bond / LLDP  Topology"))
-    page.add()
-
     bond_slaves: set[str] = set()
+    bonds: list[dict] = []
     bond_dir = Path("/proc/net/bonding")
 
     if bond_dir.exists():
-        bond_names = sorted(f.name for f in bond_dir.iterdir() if f.is_file())
-        if bond_names:
-            page.add(dim("─" * 20) + "  " + bold("BOND INTERFACES") + "  " + dim("─" * 20))
-            page.add()
-            for bname in bond_names:
-                bond = collect_bond(bname)
-                bond_slaves.update(bond["slaves"])
-                render_bond(page, bond)
-                page.add()
+        for bname in sorted(f.name for f in bond_dir.iterdir() if f.is_file()):
+            bond = collect_bond(bname)
+            bond_slaves.update(bond["slaves"])
+            bonds.append(bond)
 
     net_dir = Path("/sys/class/net")
-    standalone = sorted(
-        p.name for p in net_dir.iterdir()
+    standalone_ifaces = [
+        collect_iface(p.name)
+        for p in sorted(net_dir.iterdir(), key=lambda p: p.name)
         if p.name not in ("lo",)
         and not (net_dir / p.name / "bonding").is_dir()
         and not (net_dir / p.name / "master").is_symlink()
         and (net_dir / p.name / "device").exists()
         and p.name not in bond_slaves
-    )
+    ]
 
-    if standalone:
-        page.add()
-        page.add(dim("─" * 20) + "  " + bold("STANDALONE NIC INTERFACES") + "  " + dim("─" * 20))
-        page.add()
-        for name in standalone:
-            iface = collect_iface(name)
-            render_standalone(page, iface)
-            page.add()
-
-    print(page.render())
+    render_topology(bonds, standalone_ifaces)
 
 
 if __name__ == "__main__":
