@@ -32,12 +32,14 @@ LLDP_OK = {
 LLDP_NONE = {"switch": "N/A", "mgmt": "N/A", "port": "N/A", "sw_model": "N/A"}
 
 
-def make_iface(name="eno1", state="up", lldp=None) -> dict:
+def make_iface(name="eno1", state="up", lldp=None, pci="0000:1a:00.0") -> dict:
     return {
         "name": name, "state": state,
         "mac": "de:ad:be:ef:00:01", "mtu": "1500",
         "speed": "10000Mb/s", "duplex": "Full",
-        "pci": "0000:1a:00.0", "numa": "0",
+        "pci": pci,
+        "card_key": pci.rsplit(".", 1)[0] if "." in pci else pci,
+        "numa": "0",
         "driver": "test_driver",
         "model": "Ethernet controller: Test NIC Model (rev 01)",
         "lnkcap": "LnkCap: Port #0, Speed 2.5GT/s, Width x1, ASPM L0s L1",
@@ -267,3 +269,69 @@ class TestRenderBond:
     def test_bond_name_in_top_line(self):
         lines = self._render(make_bond(), [])
         assert "bond0" in lines[0]
+
+
+# ── same-card grouping ────────────────────────────────────────────────────────
+
+class TestSameCard:
+    """NICs sharing the same PCIe card (same bus:device, different function)."""
+
+    def _card_group_lines(self, ifaces: list) -> list[str]:
+        page = netlink.Page()
+        card_key = ifaces[0]["card_key"]
+        netlink.render_card_group(page, card_key, ifaces)
+        return [strip(l) for l in page._left]
+
+    def test_card_group_header_contains_card_key(self):
+        nic_a = make_iface("eth1", pci="0000:06:00.0")
+        nic_b = make_iface("eth2", pci="0000:06:00.1")
+        lines = self._card_group_lines([nic_a, nic_b])
+        assert "CARD:" in lines[0] and "0000:06:00" in lines[0]
+
+    def test_card_group_box_chars(self):
+        nic_a = make_iface("eth1", pci="0000:06:00.0")
+        nic_b = make_iface("eth2", pci="0000:06:00.1")
+        lines = self._card_group_lines([nic_a, nic_b])
+        assert lines[0].startswith("┌") and lines[0].endswith("┐")
+        assert lines[-1].startswith("└") and lines[-1].endswith("┘")
+
+    def test_card_group_contains_all_nic_names(self):
+        nic_a = make_iface("eth1", pci="0000:06:00.0")
+        nic_b = make_iface("eth2", pci="0000:06:00.1")
+        combined = "\n".join(self._card_group_lines([nic_a, nic_b]))
+        assert "eth1" in combined
+        assert "eth2" in combined
+
+    def test_card_group_all_lines_left_w(self):
+        # Use no-LLDP NICs so no anchor lines (which extend to SWITCH_COL) appear
+        nic_a = make_iface("eth1", pci="0000:06:00.0", lldp=LLDP_NONE)
+        nic_b = make_iface("eth2", pci="0000:06:00.1", lldp=LLDP_NONE)
+        for line in self._card_group_lines([nic_a, nic_b]):
+            assert len(line) == netlink.LEFT_W, f"width {len(line)} != {netlink.LEFT_W}: {line!r}"
+
+    def test_single_nic_uses_standalone_not_card(self):
+        """A single-port card uses the NIC standalone box, not a CARD group."""
+        page = netlink.Page()
+        netlink.render_standalone(page, make_iface("eth1", pci="0000:06:00.0"))
+        lines = [strip(l) for l in page._left]
+        assert "NIC:" in lines[0]
+        assert "CARD:" not in lines[0]
+
+    def test_bond_slaves_same_card_annotation(self):
+        """Bond slaves on the same physical card show 'same card' in PCIe header."""
+        bond = make_bond(slaves=("eno1", "eno2"))
+        page = netlink.Page()
+        original = netlink.collect_iface
+        slave_map = {
+            "eno1": make_iface("eno1", pci="0000:1a:00.0"),
+            "eno2": make_iface("eno2", pci="0000:1a:00.1"),
+        }
+        netlink.collect_iface = lambda n: slave_map[n]
+        try:
+            netlink.render_bond(page, bond)
+        finally:
+            netlink.collect_iface = original
+        lines = [strip(l) for l in page._left]
+        pcie_lines = [l for l in lines if "PCIe" in l and "same card" in l]
+        assert len(pcie_lines) == 2, "both slaves should show same-card note"
+        assert all("same card" in l for l in pcie_lines)

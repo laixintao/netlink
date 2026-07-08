@@ -16,6 +16,7 @@ netlink._USE_COLOR = True   # enable colors even when piped
 
 
 # ── mock NIC data ─────────────────────────────────────────────────────────────
+# SLAVE1 and SLAVE2 share the same physical card: 0000:1a:00 (.0 and .1)
 
 SLAVE1 = {
     "name": "eno1",
@@ -25,6 +26,7 @@ SLAVE1 = {
     "speed": "10000Mb/s",
     "duplex": "Full",
     "pci": "0000:1a:00.0",
+    "card_key": "0000:1a:00",
     "numa": "0",
     "driver": "i40e",
     "model": "Ethernet controller: Intel Corporation Ethernet Connection X722 for 10GbE SFP+ (rev 09)",
@@ -42,6 +44,7 @@ SLAVE2 = {
     **SLAVE1,
     "name": "eno2",
     "pci":  "0000:1a:00.1",
+    "card_key": "0000:1a:00",
     "mac":  "de:ad:be:ef:00:02",
     "lldp": {
         "switch":   "sw-rack01-leaf-02.example.net",
@@ -51,7 +54,8 @@ SLAVE2 = {
     },
 }
 
-STANDALONE_DOWN = {
+# eth0 is a single-port card (no siblings)
+STANDALONE_SINGLE = {
     "name": "eth0",
     "state": "down",
     "mac": "aa:bb:cc:dd:ee:ff",
@@ -59,6 +63,7 @@ STANDALONE_DOWN = {
     "speed": "Unknown!",
     "duplex": "Unknown!",
     "pci": "0000:05:00.0",
+    "card_key": "0000:05:00",
     "numa": "1",
     "driver": "mlx5_core",
     "model": "Mellanox Technologies MT27710 Family [ConnectX-4 Lx] (rev 00)",
@@ -67,14 +72,16 @@ STANDALONE_DOWN = {
     "lldp": {"switch": "N/A", "mgmt": "N/A", "port": "N/A", "sw_model": "N/A"},
 }
 
-STANDALONE_UP = {
+# eth1 and eth2 share the same physical card: 0000:06:00 (.0 and .1)
+STANDALONE_CARD_A = {
     "name": "eth1",
     "state": "up",
-    "mac": "aa:bb:cc:dd:ee:00",
+    "mac": "aa:bb:cc:dd:ee:01",
     "mtu": "1500",
     "speed": "25000Mb/s",
     "duplex": "Full",
     "pci": "0000:06:00.0",
+    "card_key": "0000:06:00",
     "numa": "0",
     "driver": "mlx5_core",
     "model": "Mellanox Technologies MT27710 Family [ConnectX-4 Lx] (rev 00)",
@@ -86,6 +93,16 @@ STANDALONE_UP = {
         "port":     "ifname 25GE1/0/45",
         "sw_model": "DemoSwitch DS6885-48Y8CQ",
     },
+}
+
+STANDALONE_CARD_B = {
+    **STANDALONE_CARD_A,
+    "name": "eth2",
+    "pci":  "0000:06:00.1",
+    "card_key": "0000:06:00",
+    "mac":  "aa:bb:cc:dd:ee:02",
+    "state": "down",
+    "lldp": {"switch": "N/A", "mgmt": "N/A", "port": "N/A", "sw_model": "N/A"},
 }
 
 BOND = {
@@ -102,7 +119,10 @@ BOND = {
 
 # ── patch collect_iface and run render ────────────────────────────────────────
 
-_MOCK_IFACES = {iface["name"]: iface for iface in [SLAVE1, SLAVE2, STANDALONE_DOWN, STANDALONE_UP]}
+_MOCK_IFACES = {
+    iface["name"]: iface
+    for iface in [SLAVE1, SLAVE2, STANDALONE_SINGLE, STANDALONE_CARD_A, STANDALONE_CARD_B]
+}
 netlink.collect_iface = lambda name: _MOCK_IFACES[name]
 
-netlink.render_topology([BOND], [STANDALONE_DOWN, STANDALONE_UP])
+netlink.render_topology([BOND], [STANDALONE_SINGLE, STANDALONE_CARD_A, STANDALONE_CARD_B])

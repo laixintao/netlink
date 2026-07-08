@@ -92,6 +92,9 @@ def collect_iface(name: str) -> dict:
     except OSError:
         d["pci"] = "N/A"
 
+    pci = d["pci"]
+    d["card_key"] = pci.rsplit(".", 1)[0] if (pci != "N/A" and "." in pci) else pci
+
     d["driver"] = d["speed"] = d["duplex"] = "N/A"
     if has("ethtool"):
         for line in run("ethtool", "-i", name).splitlines():
@@ -219,13 +222,20 @@ class Page:
     def add(self, line: str = "") -> None:
         self._left.append(line)
 
-    def add_lldp_anchor(self, prefix: str, lldp: dict) -> None:
+    def add_lldp_anchor(self, prefix: str, lldp: dict, rb: str = "") -> None:
         """Emit LLDP arrow line and record right-panel anchor."""
         idx = len(self._left)
         label = "└─ LLDP "
         vbase = _vlen(prefix) + len(label)
-        ndash = max(2, SWITCH_COL - vbase - 1)       # extend to SWITCH_COL
-        arrow = prefix + cyn(label + "─" * ndash + "►")
+        if rb:
+            # Pass through the box's right border at LEFT_W, then continue arrow.
+            # Keep everything in cyn() so the embedded border is visible, not dim.
+            n1 = max(0, LEFT_W - vbase - 1)
+            n2 = max(0, SWITCH_COL - LEFT_W - 1)
+            arrow = prefix + cyn(label + "─" * n1 + rb + "─" * n2 + "►")
+        else:
+            ndash = max(2, SWITCH_COL - vbase - 1)
+            arrow = prefix + cyn(label + "─" * ndash + "►")
         self._left.append(arrow)
         self._anchors.append((idx, lldp))
 
@@ -252,11 +262,13 @@ class Page:
 
 # ── renderers ─────────────────────────────────────────────────────────────────
 
-def _render_iface_body(page: Page, iface: dict, p: str, rb: str = "") -> None:
+def _render_iface_body(page: Page, iface: dict, p: str, rb: str = "",
+                       card_peers: tuple[str, ...] = ()) -> None:
     """
-    p   –  continuation prefix, e.g. "║  │  " for a non-last bond slave.
-    rb  –  right-border char ("║" inside bond, "│" inside standalone, "" = none).
-           LLDP anchor lines never get rb: the arrow ► acts as the exit point.
+    p          –  continuation prefix, e.g. "║  │  " for a non-last bond slave.
+    rb         –  right-border char ("║" inside bond, "│" inside standalone, "" = none).
+                  LLDP anchor lines never get rb: the arrow ► acts as the exit point.
+    card_peers –  names of other NICs that share the same physical PCIe card.
     """
     def R(line: str) -> str:
         return _rclose(line, rb) if rb else line
@@ -266,7 +278,12 @@ def _render_iface_body(page: Page, iface: dict, p: str, rb: str = "") -> None:
                f"{_kv('duplex', iface['duplex'])}   "
                f"{_kv('mtu', iface['mtu'])}"))
 
-    page.add(R(f"{p}{cyn('├─ PCIe')} {'─' * 80}"))
+    if card_peers:
+        note = f" same card: {', '.join(card_peers)} "
+        dashes = max(2, 80 - len(note))
+        page.add(R(f"{p}{cyn('├─ PCIe')} {bylw(note)}{'─' * dashes}"))
+    else:
+        page.add(R(f"{p}{cyn('├─ PCIe')} {'─' * 80}"))
     page.add(R(f"{p}{dim('│')}  {_kv('pci', iface['pci'])}   {_kv('numa', iface['numa'])}"))
     page.add(R(f"{p}{dim('│')}  {_kv('driver', iface['driver'])}"))
     # lspci -vv uses \t as field separator (e.g. "LnkCap:\tPort #0...").
@@ -296,17 +313,18 @@ def _render_iface_body(page: Page, iface: dict, p: str, rb: str = "") -> None:
 
     lldp = iface["lldp"]
     if lldp["switch"] != "N/A":
-        page.add_lldp_anchor(p, lldp)   # arrow replaces right border
+        page.add_lldp_anchor(p, lldp, rb)
     else:
         page.add(R(f"{p}{cyn('└─ LLDP')}  {dim('(no neighbor detected)')}"))
 
 
-def render_slave(page: Page, iface: dict, bp: str, last: bool, rb: str = "") -> None:
+def render_slave(page: Page, iface: dict, bp: str, last: bool, rb: str = "",
+                 card_peers: tuple[str, ...] = ()) -> None:
     bar  = "└─" if last else "├─"
     cont = "   " if last else "│  "
     header = f"{dim(bp)}{cyn(bar)} {bcyn('NIC:')} {bwh(iface['name'])}   {_state(iface['state'])}"
     page.add(_rclose(header, rb) if rb else header)
-    _render_iface_body(page, iface, bp + cont, rb=rb)
+    _render_iface_body(page, iface, bp + cont, rb=rb, card_peers=card_peers)
 
 
 def render_bond(page: Page, bond: dict) -> None:
@@ -320,10 +338,19 @@ def render_bond(page: Page, bond: dict) -> None:
         page.add(_rclose(f"{dim('║')}  {_kv('partner', bond['partner'])}", RB))
     page.add(_fill_close(dim("╠══ SLAVES "), "═", "╣"))
 
-    for i, slave_name in enumerate(bond["slaves"]):
-        iface = collect_iface(slave_name)
+    # Collect all slave ifaces first so we can compute card-sharing groups.
+    ifaces = [collect_iface(name) for name in bond["slaves"]]
+    card_groups: dict[str, list[str]] = {}
+    for iface in ifaces:
+        ck = iface.get("card_key", "N/A")
+        if ck and ck != "N/A":
+            card_groups.setdefault(ck, []).append(iface["name"])
+
+    for i, iface in enumerate(ifaces):
+        ck = iface.get("card_key", "N/A")
+        peers = tuple(n for n in card_groups.get(ck, []) if n != iface["name"])
         page.add(_rclose(dim("║"), RB))
-        render_slave(page, iface, "║  ", last=(i == len(bond["slaves"]) - 1), rb=RB)
+        render_slave(page, iface, "║  ", last=(i == len(ifaces) - 1), rb=RB, card_peers=peers)
 
     page.add(_fill_close(dim("╚"), "═", "╝"))
 
@@ -332,6 +359,18 @@ def render_standalone(page: Page, iface: dict) -> None:
     header = f"{dim('┌─')} {bcyn('NIC:')} {bwh(iface['name'])}   {_state(iface['state'])}"
     page.add(_fill_close(header, "─", "┐"))
     _render_iface_body(page, iface, "│  ", rb="│")
+    page.add(_fill_close(dim("└"), "─", "┘"))
+
+
+def render_card_group(page: Page, card_key: str, ifaces: list[dict]) -> None:
+    """Render multiple NICs sharing a physical PCIe card inside a shared CARD box."""
+    CB = "│"
+    header = f"{dim('┌─')} {cyn('CARD:')} {bwh(card_key)} "
+    page.add(_fill_close(header, "─", "┐"))
+    for i, iface in enumerate(ifaces):
+        page.add(_rclose(dim("│"), CB))
+        render_slave(page, iface, "│  ", last=(i == len(ifaces) - 1), rb=CB)
+    page.add(_rclose(dim("│"), CB))
     page.add(_fill_close(dim("└"), "─", "┘"))
 
 
@@ -350,8 +389,23 @@ def render_topology(bonds: list[dict], standalone_ifaces: list[dict]) -> None:
             page.add()
 
     if standalone_ifaces:
+        # Group NICs by physical card (card_key), preserving first-appearance order.
+        # NICs without a valid card_key (no PCI device) stay as individual boxes.
+        seen_keys: dict[str, int] = {}
+        groups: list[list[dict]] = []
         for iface in standalone_ifaces:
-            render_standalone(page, iface)
+            ck = iface.get("card_key", "N/A")
+            group_key = ck if (ck and ck != "N/A") else f"\x00{iface['name']}"
+            if group_key not in seen_keys:
+                seen_keys[group_key] = len(groups)
+                groups.append([])
+            groups[seen_keys[group_key]].append(iface)
+
+        for group in groups:
+            if len(group) > 1:
+                render_card_group(page, group[0]["card_key"], group)
+            else:
+                render_standalone(page, group[0])
             page.add()
 
     print(page.render())
