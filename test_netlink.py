@@ -6,6 +6,7 @@ Run:
     pytest test_netlink.py -v
 """
 
+import json
 import re
 import pytest
 import netlink
@@ -54,6 +55,71 @@ def make_bond(slaves=("eno1", "eno2"), status="up") -> dict:
         "status": status, "miimon": "100 ms", "ports": str(len(slaves)),
         "partner": "aa:bb:cc:dd:ee:11", "slaves": list(slaves),
     }
+
+
+# ── IP addresses ─────────────────────────────────────────────────────────────
+
+class TestAddresses:
+    @pytest.mark.parametrize("collector,name", [
+        (netlink.collect_iface, "eno1"),
+        (netlink.collect_bond, "bond0"),
+    ])
+    def test_collects_all_local_addresses(self, monkeypatch, collector, name):
+        data = [{"ifname": name, "addr_info": [
+            {"family": "inet", "local": "192.0.2.10", "prefixlen": 24},
+            {"family": "inet", "local": "198.51.100.10", "prefixlen": 0,
+             "peer": "198.51.100.11"},
+            {"family": "inet6", "local": "2001:db8::10", "prefixlen": 64},
+            {"family": "inet6", "local": "fe80::1", "prefixlen": 64},
+        ]}]
+
+        def run(*cmd):
+            assert cmd == ("ip", "-j", "address", "show", "dev", name)
+            return json.dumps(data)
+
+        monkeypatch.setattr(netlink, "has", lambda cmd: cmd == "ip")
+        monkeypatch.setattr(netlink, "run", run)
+        monkeypatch.setattr(netlink, "rf", lambda path, default="N/A": default)
+        monkeypatch.setattr(netlink.os, "readlink", lambda path: "0000:1a:00.0")
+        iface = collector(name)
+        assert iface["ipv4"] == ["192.0.2.10/24", "198.51.100.10/0"]
+        assert iface["ipv6"] == ["2001:db8::10/64", "fe80::1/64"]
+
+    @pytest.mark.parametrize("output", ["", "not json", "[]", "null",
+                                        '[{"addr_info": []}]'])
+    def test_unavailable_addresses(self, monkeypatch, output):
+        monkeypatch.setattr(netlink, "has", lambda cmd: True)
+        monkeypatch.setattr(netlink, "run", lambda *cmd: output)
+        assert netlink.collect_addresses("eno1") == {"ipv4": [], "ipv6": []}
+
+    def test_missing_ip_command(self, monkeypatch):
+        monkeypatch.setattr(netlink, "has", lambda cmd: False)
+        monkeypatch.setattr(netlink, "run", lambda *cmd: pytest.fail("ip is unavailable"))
+        assert netlink.collect_addresses("eno1") == {"ipv4": [], "ipv6": []}
+
+    @pytest.mark.parametrize("color", [False, True])
+    def test_topology_keeps_addresses_with_their_interfaces(self, monkeypatch, capsys, color):
+        monkeypatch.setattr(netlink, "_USE_COLOR", color)
+        monkeypatch.setattr(netlink, "collect_iface", lambda name: make_iface(name))
+        bond = {**make_bond(), "ipv4": ["192.0.2.10/24"]}
+        single = {**make_iface("eth0", pci="0000:05:00.0"),
+                  "ipv4": ["198.51.100.10/24", "198.51.100.11/24"]}
+        long_ipv6 = "2001:db8:1234:5678:abcd:ef01:2345:6789/128"
+        card_a = {**make_iface("eth1", pci="0000:06:00.0"), "ipv6": [long_ipv6]}
+        card_b = make_iface("eth2", pci="0000:06:00.1")
+
+        netlink.render_topology([bond], [single, card_a, card_b])
+        rendered = strip(capsys.readouterr().out)
+        assert rendered.index("BOND: bond0") < rendered.index("192.0.2.10/24") < rendered.index("SLAVES")
+        assert rendered.index("NIC: eth0") < rendered.index("198.51.100.10/24") < rendered.index("CARD:")
+        assert rendered.index("NIC: eth0") < rendered.index("198.51.100.11/24") < rendered.index("CARD:")
+        assert rendered.index("NIC: eth1") < rendered.index(long_ipv6) < rendered.index("NIC: eth2")
+        assert "ipv4:  N/A" in rendered and "ipv6:  N/A" in rendered
+        for line in rendered.splitlines():
+            if "ipv4:" in line or "ipv6:" in line:
+                assert line[netlink.LEFT_W - 1] in "│║"
+            if "►" in line:
+                assert line[netlink.SWITCH_COL - 1:netlink.SWITCH_COL + 2] == "► ┌"
 
 
 # ── switch box ────────────────────────────────────────────────────────────────

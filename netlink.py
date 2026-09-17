@@ -80,8 +80,27 @@ def has(cmd: str) -> bool:
 
 # ── data collection ───────────────────────────────────────────────────────────
 
+def collect_addresses(name: str) -> dict:
+    addresses: dict[str, list[str]] = {"ipv4": [], "ipv6": []}
+    if not has("ip"):
+        return addresses
+
+    try:
+        data = json.loads(run("ip", "-j", "address", "show", "dev", name))
+        for iface in data:
+            for addr in iface.get("addr_info", []):
+                family = {"inet": "ipv4", "inet6": "ipv6"}.get(addr.get("family"))
+                local, prefix = addr.get("local"), addr.get("prefixlen")
+                if family and local and prefix is not None:
+                    addresses[family].append(f"{local}/{prefix}")
+    except (ValueError, TypeError, AttributeError):
+        pass
+    return addresses
+
+
 def collect_iface(name: str) -> dict:
     d: dict = {"name": name}
+    d.update(collect_addresses(name))
     d["mac"]   = rf(f"/sys/class/net/{name}/address")
     d["state"] = rf(f"/sys/class/net/{name}/operstate")
     d["mtu"]   = rf(f"/sys/class/net/{name}/mtu")
@@ -156,6 +175,7 @@ def collect_bond(name: str) -> dict:
         "name": name, "mode": "N/A", "hash": "N/A", "status": "N/A",
         "miimon": "N/A", "ports": "N/A", "partner": "N/A", "slaves": [],
     }
+    b.update(collect_addresses(name))
     seen_mii = False
     for line in rf(f"/proc/net/bonding/{name}", "").splitlines():
         k, _, v = line.partition(":")
@@ -262,6 +282,13 @@ class Page:
 
 # ── renderers ─────────────────────────────────────────────────────────────────
 
+def _render_addresses(page: Page, iface: dict, p: str, rb: str = "") -> None:
+    for family in ("ipv4", "ipv6"):
+        for address in iface.get(family) or ["N/A"]:
+            line = f"{p}{_kv(family, address)}"
+            page.add(_rclose(line, rb) if rb else line)
+
+
 def _render_iface_body(page: Page, iface: dict, p: str, rb: str = "",
                        card_peers: tuple[str, ...] = ()) -> None:
     """
@@ -277,6 +304,7 @@ def _render_iface_body(page: Page, iface: dict, p: str, rb: str = "",
                f"{_kv('speed', iface['speed'])}   "
                f"{_kv('duplex', iface['duplex'])}   "
                f"{_kv('mtu', iface['mtu'])}"))
+    _render_addresses(page, iface, p, rb)
 
     if card_peers:
         note = f" same card: {', '.join(card_peers)} "
@@ -331,6 +359,7 @@ def render_bond(page: Page, bond: dict) -> None:
     RB = "║"
     header = f"{dim('╔══')} {bylw('BOND:')} {bwh(bond['name'])}   {_state(bond['status'])} "
     page.add(_fill_close(header, "═", "╗"))
+    _render_addresses(page, bond, f"{dim('║')}  ", RB)
     page.add(_rclose(f"{dim('║')}  {_kv('mode',   bond['mode'])}", RB))
     page.add(_rclose(f"{dim('║')}  {_kv('hash',   bond['hash'])}", RB))
     page.add(_rclose(f"{dim('║')}  {_kv('miimon', bond['miimon'])}    {_kv('ports', bond['ports'])}", RB))
