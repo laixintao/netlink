@@ -48,6 +48,14 @@ def bcyn(s: str) -> str: return _a(s, 1, 36)
 def bwh(s: str)  -> str: return _a(s, 1, 37)
 
 
+def ip_bg(s: str) -> str:
+    return s if s == "N/A" else _a(s, 30, 46)  # black on cyan
+
+
+def mac_bg(s: str) -> str:
+    return s if s == "N/A" else _a(s, 30, 43)  # black on yellow
+
+
 def _state(s: str) -> str:
     return bgrn("● up") if s == "up" else bred(f"○ {s}")
 
@@ -225,6 +233,10 @@ def make_switch_box(lldp: dict) -> list[str]:
     lines  = [border("┌" + "─" * (iw + 2) + "┐")]
     for k, v in rows:
         val  = bylw(v) if k == "switch" else v
+        if k == "mgmt":
+            val = ip_bg(v)
+        elif k == "port" and v.startswith("mac "):
+            val = "mac " + mac_bg(v[4:])
         # key column: "key:" padded to kw+1 chars (colon included), then one space
         # value column: val padded to vw chars
         # total cell visual width = kw + 2 + vw = iw  ✓
@@ -285,7 +297,7 @@ class Page:
 def _render_addresses(page: Page, iface: dict, p: str, rb: str = "") -> None:
     for family in ("ipv4", "ipv6"):
         for address in iface.get(family) or ["N/A"]:
-            line = f"{p}{_kv(family, address)}"
+            line = f"{p}{_kv(family, ip_bg(address))}"
             page.add(_rclose(line, rb) if rb else line)
 
 
@@ -300,7 +312,7 @@ def _render_iface_body(page: Page, iface: dict, p: str, rb: str = "",
     def R(line: str) -> str:
         return _rclose(line, rb) if rb else line
 
-    page.add(R(f"{p}{_kv('mac', iface['mac'])}   "
+    page.add(R(f"{p}{_kv('mac', mac_bg(iface['mac']))}   "
                f"{_kv('speed', iface['speed'])}   "
                f"{_kv('duplex', iface['duplex'])}   "
                f"{_kv('mtu', iface['mtu'])}"))
@@ -364,7 +376,7 @@ def render_bond(page: Page, bond: dict) -> None:
     page.add(_rclose(f"{dim('║')}  {_kv('hash',   bond['hash'])}", RB))
     page.add(_rclose(f"{dim('║')}  {_kv('miimon', bond['miimon'])}    {_kv('ports', bond['ports'])}", RB))
     if bond["partner"] != "N/A":
-        page.add(_rclose(f"{dim('║')}  {_kv('partner', bond['partner'])}", RB))
+        page.add(_rclose(f"{dim('║')}  {_kv('partner', mac_bg(bond['partner']))}", RB))
     page.add(_fill_close(dim("╠══ SLAVES "), "═", "╣"))
 
     # Collect all slave ifaces first so we can compute card-sharing groups.

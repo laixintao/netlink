@@ -4,3 +4,6 @@ Show the network link information, summary from lshw, lspci, iproute2, ethtool a
 NIC and bond details include IPv4 and IPv6 addresses with prefix lengths, collected
 using `ip -j address show dev <interface>` (iproute2). Multiple addresses are shown
 on separate lines. `N/A` means no address was found or address data is unavailable.
+
+In color output, IP addresses use a cyan background and MAC addresses use a yellow
+background. Use `python3 netlink.py --color | less -SR` to keep colors when piping.
