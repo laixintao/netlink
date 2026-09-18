@@ -115,11 +115,13 @@ class TestAddresses:
         assert rendered.index("NIC: eth0") < rendered.index("198.51.100.11/24") < rendered.index("CARD:")
         assert rendered.index("NIC: eth1") < rendered.index(long_ipv6) < rendered.index("NIC: eth2")
         assert "ipv4:  N/A" in rendered and "ipv6:  N/A" in rendered
+        left_w = len(next(line for line in rendered.splitlines() if line.startswith("╔")))
+        switch_col = left_w + netlink.SWITCH_GAP
         for line in rendered.splitlines():
             if "ipv4:" in line or "ipv6:" in line:
-                assert line[netlink.LEFT_W - 1] in "│║"
+                assert line[left_w - 1] in "│║"
             if "►" in line:
-                assert line[netlink.SWITCH_COL - 1:netlink.SWITCH_COL + 2] == "► ┌"
+                assert line[switch_col - 1:switch_col + 2] == "► ┌"
 
 
 # ── switch box ────────────────────────────────────────────────────────────────
@@ -217,14 +219,12 @@ class TestPage:
 
     def test_anchor_arrow_visual_width(self):
         page = self._make_page_with_lldp()
-        arrow_line = strip(page._left[1])
-        assert len(arrow_line) == netlink.SWITCH_COL, (
-            f"arrow visual width {len(arrow_line)} ≠ SWITCH_COL {netlink.SWITCH_COL}"
-        )
+        arrow_line = strip(page.left_lines()[1])
+        assert len(arrow_line) == page.switch_col
 
     def test_arrow_ends_with_arrowhead(self):
         page = self._make_page_with_lldp()
-        assert strip(page._left[1]).endswith("►")
+        assert strip(page.left_lines()[1]).endswith("►")
 
     def test_render_places_switch_box_on_anchor_line(self):
         page = self._make_page_with_lldp()
@@ -233,20 +233,56 @@ class TestPage:
         # line 1 is anchor → should contain switch box top (┌)
         assert "┌" in lines[1]
 
-    def test_render_all_lines_left_padded_to_LEFT_W_when_box_present(self):
+    def test_render_aligns_switch_box_rows(self):
         page = self._make_page_with_lldp()
         rendered = page.render()
         for line in rendered.splitlines():
-            # lines that contain a switch box character should have left panel at LEFT_W
-            if "│" in strip(line)[netlink.LEFT_W:]:
-                padded = strip(line)[:netlink.LEFT_W]
-                assert len(padded) == netlink.LEFT_W
+            if "│" in strip(line)[page.switch_col:]:
+                assert strip(line)[page.switch_col + 1] == "│"
 
     def test_no_anchors_renders_plain(self):
         page = netlink.Page()
         page.add("hello")
         page.add("world")
         assert page.render() == "hello\nworld"
+
+    @pytest.mark.parametrize("color", [False, True])
+    @pytest.mark.parametrize("value", ["192.0.2.10/24", "long interface detail " * 8])
+    def test_fits_later_content_with_minimal_connector(self, monkeypatch, color, value):
+        monkeypatch.setattr(netlink, "_USE_COLOR", color)
+        page = netlink.Page()
+        page.add("┌─ NIC: eth0 ", rb="┐", fill="─")
+        page.add_lldp_anchor("│  ", LLDP_OK, rb="│")
+        # A later row must determine the width before the earlier arrow is drawn.
+        page.add("│  value: " + netlink.ip_bg(value), rb="│")
+        page.add("└", rb="┘", fill="─")
+        rendered = strip(page.render())
+        lines = rendered.splitlines()
+        content = "│  value: " + value
+        width = len(content) + 2
+        assert len(lines[0]) == width
+        assert lines[2].startswith(content + " │")
+        assert lines[1][width - 1:width + 4] == "│─► ┌"
+        assert lines[3][width - 1] == "┘"
+        assert lines[2][width + 3] == "│"
+        assert page.render() == page.render()  # Rendering must not accumulate padding.
+
+
+    @pytest.mark.parametrize("color", [False, True])
+    def test_topology_shrinks_to_text_without_clipping(self, monkeypatch, color):
+        monkeypatch.setattr(netlink, "_USE_COLOR", color)
+        iface = make_iface()
+        page = netlink.Page()
+        netlink.render_standalone(page, iface)
+        lines = [strip(line) for line in page.left_lines()]
+        mac_line = next(line for line in lines if "mac:" in line)
+        # This fixture's MAC/speed/duplex/MTU row is its longest text row.
+        assert mac_line.endswith("mtu:  1500 │")
+        assert len(lines[0]) == len(mac_line) < netlink.LEFT_W
+        assert iface["model"] in "\n".join(lines)
+        assert iface["lnkcap"] in "\n".join(lines)
+        pcie_line = next(line for line in lines if "PCIe" in line)
+        assert "──" not in pcie_line
 
 
 # ── render_standalone ─────────────────────────────────────────────────────────
@@ -255,7 +291,7 @@ class TestRenderStandalone:
     def _render(self, iface) -> list[str]:
         page = netlink.Page()
         netlink.render_standalone(page, iface)
-        return [strip(l) for l in page._left]
+        return [strip(l) for l in page.left_lines()]
 
     def test_top_line_starts_with_box_char(self):
         lines = self._render(make_iface())
@@ -267,7 +303,7 @@ class TestRenderStandalone:
 
     def test_top_line_visual_width(self):
         lines = self._render(make_iface())
-        assert len(lines[0]) == netlink.LEFT_W
+        assert len(lines[0]) < netlink.LEFT_W
 
     def test_bottom_line_starts_and_ends(self):
         lines = self._render(make_iface(lldp=LLDP_NONE))
@@ -276,7 +312,7 @@ class TestRenderStandalone:
 
     def test_bottom_line_visual_width(self):
         lines = self._render(make_iface(lldp=LLDP_NONE))
-        assert len(lines[-1]) == netlink.LEFT_W
+        assert len(lines[-1]) == len(lines[0])
 
     def test_nic_name_in_top_line(self):
         lines = self._render(make_iface(name="eth42"))
@@ -308,7 +344,7 @@ class TestRenderBond:
             netlink.render_bond(page, bond)
         finally:
             netlink.collect_iface = original
-        return [strip(l) for l in page._left]
+        return [strip(l) for l in page.left_lines()]
 
     def test_top_line_starts_with_corner(self):
         lines = self._render(make_bond(), [make_iface("eno1"), make_iface("eno2")])
@@ -320,7 +356,7 @@ class TestRenderBond:
 
     def test_top_line_visual_width(self):
         lines = self._render(make_bond(), [])
-        assert len(lines[0]) == netlink.LEFT_W
+        assert len(lines[0]) < netlink.LEFT_W
 
     def test_bottom_line_closed(self):
         lines = self._render(make_bond(), [])
@@ -346,7 +382,7 @@ class TestSameCard:
         page = netlink.Page()
         card_key = ifaces[0]["card_key"]
         netlink.render_card_group(page, card_key, ifaces)
-        return [strip(l) for l in page._left]
+        return [strip(l) for l in page.left_lines()]
 
     def test_card_group_header_contains_card_key(self):
         nic_a = make_iface("eth1", pci="0000:06:00.0")
@@ -368,18 +404,18 @@ class TestSameCard:
         assert "eth1" in combined
         assert "eth2" in combined
 
-    def test_card_group_all_lines_left_w(self):
-        # Use no-LLDP NICs so no anchor lines (which extend to SWITCH_COL) appear
+    def test_card_group_all_lines_same_width(self):
+        # Use no-LLDP NICs so no anchor lines extending past the border appear.
         nic_a = make_iface("eth1", pci="0000:06:00.0", lldp=LLDP_NONE)
         nic_b = make_iface("eth2", pci="0000:06:00.1", lldp=LLDP_NONE)
-        for line in self._card_group_lines([nic_a, nic_b]):
-            assert len(line) == netlink.LEFT_W, f"width {len(line)} != {netlink.LEFT_W}: {line!r}"
+        lines = self._card_group_lines([nic_a, nic_b])
+        assert all(len(line) == len(lines[0]) for line in lines)
 
     def test_single_nic_uses_standalone_not_card(self):
         """A single-port card uses the NIC standalone box, not a CARD group."""
         page = netlink.Page()
         netlink.render_standalone(page, make_iface("eth1", pci="0000:06:00.0"))
-        lines = [strip(l) for l in page._left]
+        lines = [strip(l) for l in page.left_lines()]
         assert "NIC:" in lines[0]
         assert "CARD:" not in lines[0]
 
@@ -397,7 +433,7 @@ class TestSameCard:
             netlink.render_bond(page, bond)
         finally:
             netlink.collect_iface = original
-        lines = [strip(l) for l in page._left]
+        lines = [strip(l) for l in page.left_lines()]
         pcie_lines = [l for l in lines if "PCIe" in l and "same card" in l]
         assert len(pcie_lines) == 2, "both slaves should show same-card note"
         assert all("same card" in l for l in pcie_lines)

@@ -7,3 +7,6 @@ on separate lines. `N/A` means no address was found or address data is unavailab
 
 In color output, IP addresses use a cyan background and MAC addresses use a yellow
 background. Use `python3 netlink.py --color | less -SR` to keep colors when piping.
+
+Topology boxes fit the displayed text with one space before the right border;
+LLDP connections use a compact `─►` connector between boxes.

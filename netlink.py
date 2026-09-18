@@ -202,19 +202,19 @@ def collect_bond(name: str) -> dict:
 
 # ── layout engine ─────────────────────────────────────────────────────────────
 
-LEFT_W    = 112  # visible-character width of left panel (box borders land here)
-SWITCH_COL = LEFT_W + 24  # column where switch boxes start (arrow extends this far)
+LEFT_W = 112  # width limit for verbose PCIe descriptions
+SWITCH_GAP = 2  # shortest connector outside the left box: ─►
 
 
-def _fill_close(content: str, fill: str, close: str) -> str:
-    """Pad content to (LEFT_W - 1) visible chars with fill, append dim(close)."""
-    n = max(0, LEFT_W - _vlen(content) - 1)
+def _fill_close(content: str, fill: str, close: str, width: int = LEFT_W) -> str:
+    """Pad content to (width - 1) visible chars with fill, append dim(close)."""
+    n = max(0, width - _vlen(content) - 1)
     return content + dim(fill * n + close)
 
 
-def _rclose(content: str, char: str) -> str:
-    """Pad a content line to LEFT_W, placing dim(char) at the right edge."""
-    n = max(0, LEFT_W - _vlen(content) - 1)
+def _rclose(content: str, char: str, width: int = LEFT_W) -> str:
+    """Pad a content line to width, placing dim(char) at the right edge."""
+    n = max(0, width - _vlen(content) - 1)
     return content + " " * n + dim(char)
 
 
@@ -249,44 +249,70 @@ def make_switch_box(lldp: dict) -> list[str]:
 class Page:
     def __init__(self) -> None:
         self._left: list[str] = []
+        self._borders: dict[int, tuple[str, str]] = {}
+        self._arrow_borders: dict[int, str] = {}
         self._anchors: list[tuple[int, dict]] = []
 
-    def add(self, line: str = "") -> None:
+    @property
+    def left_w(self) -> int:
+        """Fit the longest content line, leaving one space before the border."""
+        return max((_vlen(line) + 2 for line in self._left), default=0)
+
+    @property
+    def switch_col(self) -> int:
+        return self.left_w + SWITCH_GAP
+
+    def add(self, line: str = "", rb: str = "", fill: str = " ") -> None:
+        if rb:
+            self._borders[len(self._left)] = (rb, fill)
         self._left.append(line)
 
     def add_lldp_anchor(self, prefix: str, lldp: dict, rb: str = "") -> None:
-        """Emit LLDP arrow line and record right-panel anchor."""
+        """Record the LLDP label; size its connector after all content is known."""
         idx = len(self._left)
-        label = "└─ LLDP "
-        vbase = _vlen(prefix) + len(label)
-        if rb:
-            # Pass through the box's right border at LEFT_W, then continue arrow.
-            # Keep everything in cyn() so the embedded border is visible, not dim.
-            n1 = max(0, LEFT_W - vbase - 1)
-            n2 = max(0, SWITCH_COL - LEFT_W - 1)
-            arrow = prefix + cyn(label + "─" * n1 + rb + "─" * n2 + "►")
-        else:
-            ndash = max(2, SWITCH_COL - vbase - 1)
-            arrow = prefix + cyn(label + "─" * ndash + "►")
-        self._left.append(arrow)
+        self._left.append(prefix + cyn("└─ LLDP "))
+        self._arrow_borders[idx] = rb
         self._anchors.append((idx, lldp))
 
+    def left_lines(self) -> list[str]:
+        width = self.left_w
+        lines = []
+        for i, line in enumerate(self._left):
+            if i in self._arrow_borders:
+                rb = self._arrow_borders[i]
+                if rb:
+                    n = width - _vlen(line) - 1
+                    line += cyn("─" * n + rb + "─" * (SWITCH_GAP - 1) + "►")
+                else:
+                    n = width + SWITCH_GAP - _vlen(line) - 1
+                    line += cyn("─" * n + "►")
+            elif i in self._borders:
+                rb, fill = self._borders[i]
+                if fill == " ":
+                    line = _rclose(line, rb, width)
+                else:
+                    line = _fill_close(line, fill, rb, width)
+            lines.append(line)
+        return lines
+
     def render(self) -> str:
+        left_lines = self.left_lines()
         if not self._anchors:
-            return "\n".join(self._left)
+            return "\n".join(left_lines)
 
         right: dict[int, str] = {}
         for anchor, lldp in self._anchors:
             for i, bl in enumerate(make_switch_box(lldp)):
                 right[anchor + i] = bl
 
-        total = max(len(self._left), max(k + 1 for k in right))
+        total = max(len(left_lines), max(k + 1 for k in right))
+        switch_col = self.switch_col
         out: list[str] = []
         for i in range(total):
-            left = self._left[i] if i < len(self._left) else ""
+            left = left_lines[i] if i < len(left_lines) else ""
             rbox = right.get(i)
             if rbox is not None:
-                out.append(_ljust(left, SWITCH_COL) + " " + rbox)
+                out.append(_ljust(left, switch_col) + " " + rbox)
             else:
                 out.append(left)
         return "\n".join(out)
@@ -298,7 +324,7 @@ def _render_addresses(page: Page, iface: dict, p: str, rb: str = "") -> None:
     for family in ("ipv4", "ipv6"):
         for address in iface.get(family) or ["N/A"]:
             line = f"{p}{_kv(family, ip_bg(address))}"
-            page.add(_rclose(line, rb) if rb else line)
+            page.add(line, rb=rb)
 
 
 def _render_iface_body(page: Page, iface: dict, p: str, rb: str = "",
@@ -306,26 +332,25 @@ def _render_iface_body(page: Page, iface: dict, p: str, rb: str = "",
     """
     p          –  continuation prefix, e.g. "║  │  " for a non-last bond slave.
     rb         –  right-border char ("║" inside bond, "│" inside standalone, "" = none).
-                  LLDP anchor lines never get rb: the arrow ► acts as the exit point.
+                  LLDP arrows pass through this border to reach the switch box.
     card_peers –  names of other NICs that share the same physical PCIe card.
     """
-    def R(line: str) -> str:
-        return _rclose(line, rb) if rb else line
+    def add(line: str) -> None:
+        page.add(line, rb=rb)
 
-    page.add(R(f"{p}{_kv('mac', mac_bg(iface['mac']))}   "
-               f"{_kv('speed', iface['speed'])}   "
-               f"{_kv('duplex', iface['duplex'])}   "
-               f"{_kv('mtu', iface['mtu'])}"))
+    add(f"{p}{_kv('mac', mac_bg(iface['mac']))}   "
+        f"{_kv('speed', iface['speed'])}   "
+        f"{_kv('duplex', iface['duplex'])}   "
+        f"{_kv('mtu', iface['mtu'])}")
     _render_addresses(page, iface, p, rb)
 
     if card_peers:
-        note = f" same card: {', '.join(card_peers)} "
-        dashes = max(2, 80 - len(note))
-        page.add(R(f"{p}{cyn('├─ PCIe')} {bylw(note)}{'─' * dashes}"))
+        note = f"same card: {', '.join(card_peers)}"
+        add(f"{p}{cyn('├─ PCIe')} {bylw(note)}")
     else:
-        page.add(R(f"{p}{cyn('├─ PCIe')} {'─' * 80}"))
-    page.add(R(f"{p}{dim('│')}  {_kv('pci', iface['pci'])}   {_kv('numa', iface['numa'])}"))
-    page.add(R(f"{p}{dim('│')}  {_kv('driver', iface['driver'])}"))
+        add(f"{p}{cyn('├─ PCIe')}")
+    add(f"{p}{dim('│')}  {_kv('pci', iface['pci'])}   {_kv('numa', iface['numa'])}")
+    add(f"{p}{dim('│')}  {_kv('driver', iface['driver'])}")
     # lspci -vv uses \t as field separator (e.g. "LnkCap:\tPort #0...").
     # \t counts as 1 in len() but expands to multiple columns in the terminal,
     # causing _rclose to place the border too far right. Replace with a space.
@@ -338,7 +363,7 @@ def _render_iface_body(page: Page, iface: dict, p: str, rb: str = "",
     _model = _clean(iface['model'])
     if len(_model) > _max_model:
         _model = _model[:_max_model - 3] + "..."
-    page.add(R(f"{p}{dim('│')}  {_kv('model', mgn(_model))}"))
+    add(f"{p}{dim('│')}  {_kv('model', mgn(_model))}")
 
     # "│  " overhead = │(1) + 2sp = 3; +1 border
     _max_lnk = LEFT_W - len(p) - 4
@@ -348,14 +373,14 @@ def _render_iface_body(page: Page, iface: dict, p: str, rb: str = "",
         _lnkcap = _lnkcap[:_max_lnk - 3] + "..."
     if len(_lnksta) > _max_lnk:
         _lnksta = _lnksta[:_max_lnk - 3] + "..."
-    page.add(R(f"{p}{dim('│')}  {dim(_lnkcap)}"))
-    page.add(R(f"{p}{dim('│')}  {dim(_lnksta)}"))
+    add(f"{p}{dim('│')}  {dim(_lnkcap)}")
+    add(f"{p}{dim('│')}  {dim(_lnksta)}")
 
     lldp = iface["lldp"]
     if lldp["switch"] != "N/A":
         page.add_lldp_anchor(p, lldp, rb)
     else:
-        page.add(R(f"{p}{cyn('└─ LLDP')}  {dim('(no neighbor detected)')}"))
+        add(f"{p}{cyn('└─ LLDP')}  {dim('(no neighbor detected)')}")
 
 
 def render_slave(page: Page, iface: dict, bp: str, last: bool, rb: str = "",
@@ -363,21 +388,21 @@ def render_slave(page: Page, iface: dict, bp: str, last: bool, rb: str = "",
     bar  = "└─" if last else "├─"
     cont = "   " if last else "│  "
     header = f"{dim(bp)}{cyn(bar)} {bcyn('NIC:')} {bwh(iface['name'])}   {_state(iface['state'])}"
-    page.add(_rclose(header, rb) if rb else header)
+    page.add(header, rb=rb)
     _render_iface_body(page, iface, bp + cont, rb=rb, card_peers=card_peers)
 
 
 def render_bond(page: Page, bond: dict) -> None:
     RB = "║"
     header = f"{dim('╔══')} {bylw('BOND:')} {bwh(bond['name'])}   {_state(bond['status'])} "
-    page.add(_fill_close(header, "═", "╗"))
+    page.add(header, rb="╗", fill="═")
     _render_addresses(page, bond, f"{dim('║')}  ", RB)
-    page.add(_rclose(f"{dim('║')}  {_kv('mode',   bond['mode'])}", RB))
-    page.add(_rclose(f"{dim('║')}  {_kv('hash',   bond['hash'])}", RB))
-    page.add(_rclose(f"{dim('║')}  {_kv('miimon', bond['miimon'])}    {_kv('ports', bond['ports'])}", RB))
+    page.add(f"{dim('║')}  {_kv('mode',   bond['mode'])}", rb=RB)
+    page.add(f"{dim('║')}  {_kv('hash',   bond['hash'])}", rb=RB)
+    page.add(f"{dim('║')}  {_kv('miimon', bond['miimon'])}    {_kv('ports', bond['ports'])}", rb=RB)
     if bond["partner"] != "N/A":
-        page.add(_rclose(f"{dim('║')}  {_kv('partner', mac_bg(bond['partner']))}", RB))
-    page.add(_fill_close(dim("╠══ SLAVES "), "═", "╣"))
+        page.add(f"{dim('║')}  {_kv('partner', mac_bg(bond['partner']))}", rb=RB)
+    page.add(dim("╠══ SLAVES "), rb="╣", fill="═")
 
     # Collect all slave ifaces first so we can compute card-sharing groups.
     ifaces = [collect_iface(name) for name in bond["slaves"]]
@@ -390,29 +415,29 @@ def render_bond(page: Page, bond: dict) -> None:
     for i, iface in enumerate(ifaces):
         ck = iface.get("card_key", "N/A")
         peers = tuple(n for n in card_groups.get(ck, []) if n != iface["name"])
-        page.add(_rclose(dim("║"), RB))
+        page.add(dim("║"), rb=RB)
         render_slave(page, iface, "║  ", last=(i == len(ifaces) - 1), rb=RB, card_peers=peers)
 
-    page.add(_fill_close(dim("╚"), "═", "╝"))
+    page.add(dim("╚"), rb="╝", fill="═")
 
 
 def render_standalone(page: Page, iface: dict) -> None:
     header = f"{dim('┌─')} {bcyn('NIC:')} {bwh(iface['name'])}   {_state(iface['state'])}"
-    page.add(_fill_close(header, "─", "┐"))
+    page.add(header, rb="┐", fill="─")
     _render_iface_body(page, iface, "│  ", rb="│")
-    page.add(_fill_close(dim("└"), "─", "┘"))
+    page.add(dim("└"), rb="┘", fill="─")
 
 
 def render_card_group(page: Page, card_key: str, ifaces: list[dict]) -> None:
     """Render multiple NICs sharing a physical PCIe card inside a shared CARD box."""
     CB = "│"
     header = f"{dim('┌─')} {cyn('CARD:')} {bwh(card_key)} "
-    page.add(_fill_close(header, "─", "┐"))
+    page.add(header, rb="┐", fill="─")
     for i, iface in enumerate(ifaces):
-        page.add(_rclose(dim("│"), CB))
+        page.add(dim("│"), rb=CB)
         render_slave(page, iface, "│  ", last=(i == len(ifaces) - 1), rb=CB)
-    page.add(_rclose(dim("│"), CB))
-    page.add(_fill_close(dim("└"), "─", "┘"))
+    page.add(dim("│"), rb=CB)
+    page.add(dim("└"), rb="┘", fill="─")
 
 
 # ── topology renderer ─────────────────────────────────────────────────────────
