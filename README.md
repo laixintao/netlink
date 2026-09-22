@@ -10,3 +10,7 @@ background. Use `python3 netlink.py --color | less -SR` to keep colors when pipi
 
 Topology boxes fit the displayed text with one space before the right border;
 LLDP connections use a compact `─►` connector between boxes.
+
+output:
+
+![](./doc/demo1.png)
