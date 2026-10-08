@@ -123,6 +123,8 @@ def collect_iface(name: str) -> dict:
     d["card_key"] = pci.rsplit(".", 1)[0] if (pci != "N/A" and "." in pci) else pci
 
     d["driver"] = d["speed"] = d["duplex"] = "N/A"
+    d["module_identifier"] = ""
+    d["module_pn"] = ""
     if has("ethtool"):
         for line in run("ethtool", "-i", name).splitlines():
             k, _, v = line.partition(":")
@@ -133,6 +135,12 @@ def collect_iface(name: str) -> dict:
             match k.strip():
                 case "Speed":  d["speed"]  = v.strip()
                 case "Duplex": d["duplex"] = v.strip()
+        for line in run("ethtool", "-m", name).splitlines():
+            k, _, v = line.partition(":")
+            if k.strip() == "Identifier":
+                d["module_identifier"] = v.strip()
+            elif k.strip() == "Vendor PN":
+                d["module_pn"] = v.strip()
 
     d["model"] = d["numa"] = d["lnkcap"] = d["lnksta"] = "N/A"
     if d["pci"] != "N/A" and has("lspci"):
@@ -350,7 +358,12 @@ def _render_iface_body(page: Page, iface: dict, p: str, rb: str = "",
     else:
         add(f"{p}{cyn('├─ PCIe')}")
     add(f"{p}{dim('│')}  {_kv('pci', iface['pci'])}   {_kv('numa', iface['numa'])}")
-    add(f"{p}{dim('│')}  {_kv('driver', iface['driver'])}")
+    driver = iface['driver']
+    if module_identifier := iface.get("module_identifier"):
+        driver += f" on {module_identifier}"
+    if module_pn := iface.get("module_pn"):
+        driver += f"   {_kv('PN', module_pn)}"
+    add(f"{p}{dim('│')}  {_kv('driver', driver)}")
     # lspci -vv uses \t as field separator (e.g. "LnkCap:\tPort #0...").
     # \t counts as 1 in len() but expands to multiple columns in the terminal,
     # causing _rclose to place the border too far right. Replace with a space.

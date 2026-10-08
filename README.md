@@ -1,6 +1,10 @@
 # netlink
 Show the network link information, summary from lshw, lspci, iproute2, ethtool and LLDP.
 
+Driver lines include the module identifier from `ethtool -m` when available,
+for example `driver:  mlx5_core on 0x11 (QSFP28)`. The module's `Vendor PN`
+is appended as `PN:  ...` when available.
+
 NIC and bond details include IPv4 and IPv6 addresses with prefix lengths, collected
 using `ip -j address show dev <interface>` (iproute2). Multiple addresses are shown
 on separate lines. `N/A` means no address was found or address data is unavailable.

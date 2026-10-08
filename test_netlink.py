@@ -57,6 +57,39 @@ def make_bond(slaves=("eno1", "eno2"), status="up") -> dict:
     }
 
 
+@pytest.mark.parametrize("module_output,expected", [
+    ("\tIdentifier                                : 0x11 (QSFP28)\n"
+     "\tExtended identifier                       : 0x00\n", "0x11 (QSFP28)"),
+    ("Identifier : 0x03 (SFP)\n", "0x03 (SFP)"),
+    ("", ""),
+    ("netlink error: Operation not supported\n", ""),
+])
+@pytest.mark.parametrize("pn", ["", "DEMO-QSFP28-100G"])
+def test_module_identifier(monkeypatch, module_output, expected, pn):
+    module_output += f"\tVendor PN                                 : {pn}   \n"
+    outputs = {
+        ("ethtool", "-i", "eno1"): "driver: mlx5_core\n",
+        ("ethtool", "-m", "eno1"): module_output,
+    }
+    monkeypatch.setattr(netlink, "has", lambda cmd: cmd == "ethtool")
+    monkeypatch.setattr(netlink, "run", lambda *cmd: outputs.get(cmd, ""))
+    monkeypatch.setattr(netlink, "rf", lambda path, default="N/A": default)
+    monkeypatch.setattr(netlink.os, "readlink", lambda path: "0000:1a:00.0")
+    iface = netlink.collect_iface("eno1")
+    assert iface["module_identifier"] == expected
+    assert iface["module_pn"] == pn
+    page = netlink.Page()
+    netlink.render_standalone(page, iface)
+    line = next(strip(line) for line in page.left_lines() if "driver:" in strip(line))
+    assert "driver:  mlx5_core" + (f" on {expected}" if expected else "") in line
+    if not expected:
+        assert " on " not in line
+    if pn:
+        assert f"PN:  {pn}" in line
+    else:
+        assert "PN:" not in line
+
+
 # ── IP addresses ─────────────────────────────────────────────────────────────
 
 class TestAddresses:
